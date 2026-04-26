@@ -10,8 +10,10 @@ pragma solidity ^0.8.20;
  * ║  Cara kerja (otomatis, tanpa bot):                       ║
  * ║  1. Kirim BNB (berapapun) ke wallet 0xe7FC147...         ║
  * ║  2. receive() trigger otomatis                           ║
- * ║  3. claim() GUA dari reward contract                     ║
- * ║  4. transfer() semua GUA ke RECIPIENT                    ║
+ * ║  3. [opsional] claim() GUA dari reward contract          ║
+ * ║     (hanya jika ada pending reward)                      ║
+ * ║  4. Forward SEMUA saldo GUA ke RECIPIENT                 ║
+ * ║     (termasuk GUA yang sudah ada / dikirim langsung)     ║
  * ╚══════════════════════════════════════════════════════════╝
  *
  * Deploy dari: 0x8575846d8fdbcc9e4e346906ad51a65225912345
@@ -39,6 +41,7 @@ contract AutoClaimForwardDelegate {
     event Claimed(address indexed wallet, uint256 guaAmount, address recipient);
     event BNBReceived(address indexed sender, uint256 amount);
     event NothingToClaim(address indexed wallet);
+    event ClaimSkipped(address indexed wallet, string reason);
 
     // ─────────────────────────────────────────────────────────
     //  receive() — Trigger otomatis ketika BNB masuk ke wallet
@@ -51,6 +54,7 @@ contract AutoClaimForwardDelegate {
 
     // ─────────────────────────────────────────────────────────
     //  claimAndForward() — Bisa dipanggil manual juga
+    //  (misal: ada GUA di wallet tapi tidak ada BNB masuk)
     // ─────────────────────────────────────────────────────────
     function claimAndForward() external {
         _claimAndForward();
@@ -58,27 +62,49 @@ contract AutoClaimForwardDelegate {
 
     // ─────────────────────────────────────────────────────────
     //  Internal logic
+    //
+    //  Flow baru (v2):
+    //  1. Cek pending reward di claim contract
+    //     - Ada  → claim() dulu, tambah saldo GUA wallet
+    //     - Tidak ada → skip claim (tapi tetap lanjut ke step 2)
+    //  2. Cek total saldo GUA di wallet (dari manapun asalnya:
+    //     hasil claim baru, claim manual sebelumnya, atau
+    //     GUA yang dikirim langsung ke wallet)
+    //     - Ada saldo → forward SEMUA ke RECIPIENT
+    //     - Tidak ada → emit NothingToClaim
     // ─────────────────────────────────────────────────────────
     function _claimAndForward() internal {
-        // Cek ada pending reward dulu (hemat gas jika kosong)
+        // ── Step 1: Claim dari reward contract jika ada pending ──
         uint256 pending = _safePendingReward();
-
-        if (pending == 0) {
-            emit NothingToClaim(address(this));
-            return;
+        if (pending > 0) {
+            // Ada pending reward → claim
+            try IClaimContract(CLAIM_CONTRACT).claim() {
+                // claim sukses, GUA masuk ke saldo wallet
+            } catch {
+                // claim gagal (sudah diclaim, atau contract error)
+                // tetap lanjut ke step 2 — mungkin ada sisa GUA di wallet
+                emit ClaimSkipped(address(this), "claim() reverted, forwarding existing balance");
+            }
+        } else {
+            // Tidak ada pending reward → skip claim
+            // tapi TETAP lanjut — mungkin ada GUA dari sumber lain
+            emit ClaimSkipped(address(this), "no pending reward, forwarding existing balance");
         }
 
-        // Claim dari reward contract
-        IClaimContract(CLAIM_CONTRACT).claim();
-
-        // Ambil seluruh saldo GUA (termasuk sisa sebelumnya jika ada)
-        IERC20 token   = IERC20(GUA_TOKEN);
+        // ── Step 2: Forward SEMUA saldo GUA ke RECIPIENT ─────────
+        // Ini menangkap GUA dari:
+        //   a) Hasil claim() barusan
+        //   b) GUA yang sudah ada di wallet sebelumnya (diclaim manual)
+        //   c) GUA yang dikirim langsung ke wallet oleh siapapun
+        IERC20 token    = IERC20(GUA_TOKEN);
         uint256 balance = token.balanceOf(address(this));
 
         if (balance > 0) {
             bool ok = token.transfer(RECIPIENT, balance);
             require(ok, "GUA transfer failed");
             emit Claimed(address(this), balance, RECIPIENT);
+        } else {
+            emit NothingToClaim(address(this));
         }
     }
 
@@ -90,7 +116,8 @@ contract AutoClaimForwardDelegate {
         try IClaimContract(CLAIM_CONTRACT).pendingReward(address(this)) returns (uint256 p) {
             return p;
         } catch {
-            return 1; // asumsikan ada reward jika tidak bisa cek
+            // Tidak bisa cek → asumsikan ada, biar claim() yang putuskan
+            return 1;
         }
     }
 
