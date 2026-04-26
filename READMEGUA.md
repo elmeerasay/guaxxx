@@ -1,74 +1,85 @@
-# BSC Auto Claim + Forward Bot
+# AutoClaimForwardDelegate — EIP-7702 (BSC)
 
-## Cara Pakai (3 Langkah)
+> **Tanpa bot, tanpa loop** — semua logika ada di dalam smart contract.
+> Cukup kirim BNB ke wallet → otomatis claim GUA + forward ke RECIPIENT.
 
-### Langkah 1 — Install Dependencies
+---
+
+## Cara Kerja
+
+```
+Kirim BNB ke 0xe7FC147...
+        │
+        ▼  (EIP-7702: EOA bertindak sebagai contract)
+  receive() trigger otomatis
+        │
+        ├─ cek pendingReward() → ada?
+        │
+        ├─ claim() → GUA masuk ke 0xe7FC147...
+        │
+        └─ transfer() → semua GUA ke 0x8575846...  ✅
+```
+
+---
+
+## File
+
+| File | Keterangan |
+|---|---|
+| `AutoClaimForwardDelegate.sol` | Smart contract utama |
+| `deploy.py` | Deploy contract + setup EIP-7702 delegation (1x jalan) |
+| `requirements.txt` | Dependencies Python untuk deploy.py |
+
+> `bot.py` sudah tidak diperlukan — logika ada di contract.
+
+---
+
+## Setup (1 Kali Saja)
+
+### 1. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### Langkah 2 — Deploy Delegate Contract (SEKALI SAJA)
+### 2. Compile Contract di Remix
 1. Buka https://remix.ethereum.org/
-2. Upload `ClaimAndForwardDelegate.sol`
-3. Compile → Deploy ke **BSC Mainnet** (pakai MetaMask)
-4. Salin contract address yang muncul setelah deploy
-5. Atau jalankan `deploy.py` (isi PRIVATE_KEY dulu)
+2. Upload / paste isi `AutoClaimForwardDelegate.sol`
+3. Compile dengan Solidity **≥ 0.8.20**
+4. Copy **Compilation Details → Bytecode → object** (string hex)
 
-### Langkah 3 — Konfigurasi & Jalankan Bot
-Edit `bot.py` bagian KONFIGURASI:
+### 3. Isi deploy.py
 ```python
-PRIVATE_KEY      = "0xISI_PRIVATE_KEY_KAMU"
-DELEGATE_ADDRESS = "0xALAMAT_HASIL_DEPLOY"
-RECIPIENT        = "0x8575846d8fdbcc9e4e346906ad51a65225912345"
+DEPLOYER_PRIVATE_KEY = "0xPK_WALLET_0x8575846"   # deployer & penerima GUA
+WORKER_PRIVATE_KEY   = "0xPK_WALLET_0xe7FC147"   # worker yang delegate
+BYTECODE             = "0xHASIL_COMPILE_REMIX"
 ```
 
-Jalankan:
+### 4. Jalankan deploy.py (satu kali)
 ```bash
-python bot.py
+python deploy.py
 ```
+
+Script ini otomatis melakukan **2 hal sekaligus**:
+- **Step 1** — Deploy `AutoClaimForwardDelegate` dari wallet `0x8575846...`
+- **Step 2** — Sign EIP-7702 authorization dari wallet `0xe7FC147...` (delegate ke contract)
+
+### 5. Selesai ✅
+Kirim BNB ke `0xe7FC147...` → claim + forward berjalan otomatis.
 
 ---
-
-## Cara Kerja (Flow)
-
-```
-Kamu kirim BNB berapapun ke wallet 0xe7FC...
-           │
-           ▼ (bot deteksi dalam ~3 detik)
-    Cek BNB ≥ fee (≈ 0.0008 BNB)?
-           │ Ya
-           ▼
-    Kirim 1 TX EIP-7702 ──────────────────────────────┐
-    ├── Authorization: EOA delegate ke contract        │
-    ├── claim() → GUA masuk ke wallet kamu             │ 1 TX atomik
-    └── transfer() → GUA langsung ke RECIPIENT ────────┘
-           │
-           ▼
-    Kembali monitor...
-```
-
-## Penjelasan EIP-7702
-
-| Tanpa EIP-7702 | Dengan EIP-7702 |
-|---|---|
-| claim() → 1 TX | ✅ claim + transfer → 1 TX |
-| transfer() → 1 TX | msg.sender = EOA asli kamu |
-| Total 2 TX + 2x fee | Fee hanya 1x |
-
-EIP-7702 sudah aktif di BSC sejak **Pascal Hardfork 20 Maret 2025**.
-
----
-
-## Konfigurasi
-
-| Variable | Nilai Default | Keterangan |
-|---|---|---|
-| `GAS_PRICE_GWEI` | 3 | Naikkan ke 5 jika sering pending |
-| `GAS_LIMIT` | 260,000 | Cukup untuk claim + transfer |
-| `POLL_INTERVAL_SEC` | 3 | Cek setiap 3 detik |
-| `MIN_BNB_BUFFER` | 0.0003 | BNB sisa setelah bayar fee |
 
 ## Estimasi Fee
-- Gas limit: 260,000
-- Gas price: 3 Gwei
-- **Total fee: ≈ 0.00078 BNB (< $0.50)**
+| Aksi | Gas | BNB |
+|---|---|---|
+| Deploy contract | ~500,000 | ~0.0015 BNB |
+| Set delegation | ~50,000 | ~0.00015 BNB |
+| Tiap claim+forward | ~150,000 | ~0.00045 BNB |
+
+> Harga BNB asumsi 3 Gwei gas price.
+
+---
+
+## Keamanan
+- `RECIPIENT` hardcoded di contract → tidak bisa diubah siapapun setelah deploy
+- `CLAIM_CONTRACT` dan `GUA_TOKEN` hardcoded → tidak ada fungsi admin/owner
+- Tidak ada `selfdestruct`, tidak ada `withdraw`, tidak ada backdoor
